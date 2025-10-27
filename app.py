@@ -4,6 +4,7 @@ from dotenv import load_dotenv
 import os
 import requests
 import json
+from supabase import create_client, Client
 
 # ✅ Cargar variables del entorno (.env)
 load_dotenv()
@@ -27,6 +28,15 @@ TRANSFER_CONTRACT_NAME = "traspaso-v2"
 # DeepSeek API
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
 DEEPSEEK_URL = "https://api.deepseek.com/v1/chat/completions"
+
+# Supabase Configuration
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_KEY = os.getenv("SUPABASE_KEY")
+
+# Inicializar cliente de Supabase
+supabase: Client = None
+if SUPABASE_URL and SUPABASE_KEY:
+    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 # ==========================
 # 🏠 Rutas del backend
@@ -104,6 +114,7 @@ def chat():
     try:
         data = request.get_json()
         user_message = data.get("message", "")
+        sender_wallet = data.get("sender_wallet", "")  # Wallet del usuario conectado
 
         if not user_message:
             return jsonify({"action": "none", "message": "No se envió ningún mensaje."}), 400
@@ -120,18 +131,64 @@ def chat():
                 {
                     "role": "system",
                     "content": (
-                        "Eres un asistente para interpretar comandos hacia contratos inteligentes "
-                        "en la blockchain de Stacks. Analiza los comandos del usuario y extrae información sobre transferencias de STX. "
-                        "Devuelve SIEMPRE una respuesta JSON con las siguientes claves:\n"
-                        "- 'action': puede ser 'transfer', 'balance', 'increment', 'read', o 'none'\n"
+                        "Eres un asistente inteligente para interpretar comandos hacia contratos inteligentes "
+                        "en la blockchain de Stacks y gestionar usuarios en la base de datos. "
+                        f"La wallet del usuario conectado es: {sender_wallet if sender_wallet else 'NO PROPORCIONADA'}. "
+                        "Analiza los comandos del usuario y extrae información relevante. "
+                        "Devuelve SIEMPRE una respuesta JSON con las siguientes claves:\n\n"
+                        
+                        "ACCIONES DISPONIBLES:\n"
+                        "- 'transfer': Transferir STX a una wallet directamente\n"
+                        "- 'transfer_to_contact': Transferir STX a un contacto por su nombre\n"
+                        "- 'balance': Consultar balance de una wallet\n"
+                        "- 'increment': Incrementar contador del contrato\n"
+                        "- 'read': Leer valor del contador\n"
+                        "- 'list_users': Listar todos los usuarios\n"
+                        "- 'get_user': Obtener info de un usuario específico\n"
+                        "- 'create_user': Crear un nuevo usuario\n"
+                        "- 'get_contacts': Obtener contactos de un usuario\n"
+                        "- 'create_contact': Crear un nuevo contacto\n"
+                        "- 'none': Ninguna acción específica\n\n"
+                        
+                        "ESTRUCTURA DE RESPUESTA:\n"
+                        "- 'action': una de las acciones listadas arriba\n"
                         "- 'message': explicación breve de lo que se hará\n"
-                        "- 'recipient': dirección del destinatario (solo si action es 'transfer')\n"
-                        "- 'amount': cantidad de STX a transferir (solo si action es 'transfer')\n\n"
-                        "Ejemplos:\n"
+                        "- Campos adicionales según la acción:\n\n"
+                        
+                        "EJEMPLOS:\n\n"
+                        
+                        "1. Transferencia STX (por wallet):\n"
                         "Usuario: 'Transfiere 50 STX a ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
-                        "Respuesta: {\"action\": \"transfer\", \"recipient\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"amount\": 50, \"message\": \"Transferir 50 STX a la wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\"}\n\n"
+                        "Respuesta: {\"action\": \"transfer\", \"recipient\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"amount\": 50, \"message\": \"Transferir 50 STX\"}\n\n"
+                        
+                        "1b. Transferencia STX (por nombre de contacto):\n"
+                        "Usuario: 'Envía 10 STX a Andrés'\n"
+                        "Respuesta: {\"action\": \"transfer_to_contact\", \"contact_name\": \"Andrés\", \"amount\": 10, \"sender_wallet\": \"ST2PQHQ...\", \"message\": \"Buscar contacto Andrés y transferir 10 STX\"}\n"
+                        "IMPORTANTE: Para esta acción, SIEMPRE incluye el sender_wallet que viene en el contexto del mensaje.\n\n"
+                        
+                        "2. Balance:\n"
                         "Usuario: '¿Cuál es el balance de ST1234...?'\n"
-                        "Respuesta: {\"action\": \"balance\", \"address\": \"ST1234...\", \"message\": \"Consultando balance de la wallet\"}"
+                        "Respuesta: {\"action\": \"balance\", \"address\": \"ST1234...\", \"message\": \"Consultando balance\"}\n\n"
+                        
+                        "3. Listar usuarios:\n"
+                        "Usuario: 'Muéstrame todos los usuarios' o '¿Cuántos usuarios hay?'\n"
+                        "Respuesta: {\"action\": \"list_users\", \"message\": \"Obteniendo lista de usuarios\"}\n\n"
+                        
+                        "4. Buscar usuario:\n"
+                        "Usuario: 'Busca el usuario con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
+                        "Respuesta: {\"action\": \"get_user\", \"wallet_address\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"message\": \"Buscando usuario\"}\n\n"
+                        
+                        "5. Crear usuario:\n"
+                        "Usuario: 'Registra un usuario llamado Juan con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
+                        "Respuesta: {\"action\": \"create_user\", \"username\": \"Juan\", \"wallet_address\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"message\": \"Creando usuario Juan\"}\n\n"
+                        
+                        "6. Ver contactos:\n"
+                        "Usuario: 'Muéstrame los contactos del usuario 123e4567-e89b-12d3-a456-426614174000'\n"
+                        "Respuesta: {\"action\": \"get_contacts\", \"user_id\": \"123e4567-e89b-12d3-a456-426614174000\", \"message\": \"Obteniendo contactos\"}\n\n"
+                        
+                        "7. Crear contacto:\n"
+                        "Usuario: 'Agrega a María con wallet ST1PQHQ... como contacto del usuario 123e4567...'\n"
+                        "Respuesta: {\"action\": \"create_contact\", \"user_id\": \"123e4567...\", \"nombre\": \"María\", \"wallet_address\": \"ST1PQHQ...\", \"message\": \"Agregando contacto\"}"
                     )
                 },
                 {"role": "user", "content": user_message}
@@ -168,16 +225,202 @@ def chat():
             # Si no es JSON, intentar deducir la acción
             action = "none"
             msg_lower = user_message.lower()
-            if "transferir" in msg_lower or "transfiere" in msg_lower or "enviar" in msg_lower:
-                action = "transfer"
+            
+            # Detectar si menciona "enviar" o "transferir" con un nombre (no una wallet)
+            if ("transferir" in msg_lower or "transfiere" in msg_lower or 
+                "enviar" in msg_lower or "envía" in msg_lower or "envia" in msg_lower):
+                # Si NO contiene una wallet address (ST... o SP...)
+                if not ("ST" in user_message.upper() or "SP" in user_message.upper()):
+                    action = "transfer_to_contact"
+                else:
+                    action = "transfer"
             elif "balance" in msg_lower or "saldo" in msg_lower:
                 action = "balance"
             elif "incrementa" in msg_lower or "aumenta" in msg_lower:
                 action = "increment"
             elif "contador" in msg_lower or "valor" in msg_lower:
                 action = "read"
+            elif "usuarios" in msg_lower or "listar usuarios" in msg_lower or "ver usuarios" in msg_lower:
+                action = "list_users"
+            elif "crear usuario" in msg_lower or "registrar usuario" in msg_lower or "nuevo usuario" in msg_lower:
+                action = "create_user"
+            elif "contactos" in msg_lower or "ver contactos" in msg_lower:
+                action = "get_contacts"
+            elif "crear contacto" in msg_lower or "agregar contacto" in msg_lower or "nuevo contacto" in msg_lower:
+                action = "create_contact"
+            elif "buscar usuario" in msg_lower or "encontrar usuario" in msg_lower:
+                action = "get_user"
 
             ia_json = {"action": action, "message": ia_text}
+
+        # Asegurar que sender_wallet esté presente si fue proporcionado
+        if sender_wallet and "sender_wallet" not in ia_json:
+            ia_json["sender_wallet"] = sender_wallet
+
+        # ========================================
+        # 🤖 EJECUTAR ACCIONES DE BASE DE DATOS
+        # ========================================
+        action = ia_json.get("action")
+        
+        # ==========================================
+        # 💸 TRANSFERENCIA A CONTACTO POR NOMBRE
+        # ==========================================
+        if action == "transfer_to_contact":
+            contact_name = ia_json.get("contact_name")
+            amount = ia_json.get("amount")
+            sender_wallet_from_json = ia_json.get("sender_wallet")
+            
+            # Usar sender_wallet del request si no viene en el JSON de la IA
+            if not sender_wallet_from_json and sender_wallet:
+                sender_wallet_from_json = sender_wallet
+            
+            if not sender_wallet_from_json:
+                ia_json["error"] = "Se requiere la wallet del remitente (sender_wallet)"
+                ia_json["message"] = "❌ Debes proporcionar tu wallet conectada para buscar tus contactos"
+            elif not contact_name:
+                ia_json["error"] = "No se pudo identificar el nombre del contacto"
+                ia_json["message"] = "❌ Por favor especifica el nombre del contacto"
+            elif not amount or amount <= 0:
+                ia_json["error"] = "No se pudo identificar la cantidad a transferir"
+                ia_json["message"] = "❌ Por favor especifica una cantidad válida de STX"
+            elif supabase:
+                try:
+                    # 1. Buscar el usuario por su wallet
+                    user_response = supabase.table("users").select("id, username").eq("wallet_address", sender_wallet_from_json).execute()
+                    
+                    if not user_response.data:
+                        ia_json["error"] = "No se encontró un usuario con esa wallet"
+                        ia_json["message"] = f"❌ Tu wallet {sender_wallet_from_json} no está registrada. Regístrate primero."
+                    else:
+                        user_id = user_response.data[0]["id"]
+                        username = user_response.data[0]["username"]
+                        
+                        # 2. Buscar el contacto por nombre (case-insensitive)
+                        contacts_response = supabase.table("contacts").select("*").eq("user_id", user_id).execute()
+                        
+                        if not contacts_response.data:
+                            ia_json["error"] = "No tienes contactos registrados"
+                            ia_json["message"] = f"❌ {username}, aún no tienes contactos. Agrega algunos primero."
+                        else:
+                            # Buscar contacto por nombre (ignorando mayúsculas/minúsculas y espacios)
+                            contact_found = None
+                            search_name = contact_name.strip().lower()
+                            
+                            for contact in contacts_response.data:
+                                if contact["nombre"].strip().lower() == search_name:
+                                    contact_found = contact
+                                    break
+                            
+                            if not contact_found:
+                                # Intentar búsqueda parcial
+                                for contact in contacts_response.data:
+                                    if search_name in contact["nombre"].strip().lower():
+                                        contact_found = contact
+                                        break
+                            
+                            if contact_found:
+                                # ✅ Contacto encontrado, preparar transferencia
+                                ia_json["action"] = "transfer"  # Cambiar a acción de transferencia
+                                ia_json["recipient"] = contact_found["wallet_address"]
+                                ia_json["recipient_name"] = contact_found["nombre"]
+                                ia_json["amount"] = amount
+                                ia_json["sender"] = sender_wallet_from_json
+                                ia_json["contact_id"] = contact_found["id"]
+                                ia_json["message"] = f"✅ Contacto '{contact_found['nombre']}' encontrado. Preparando transferencia de {amount} STX a {contact_found['wallet_address']}"
+                                ia_json["success"] = True
+                            else:
+                                # Listar contactos disponibles
+                                available_contacts = [c["nombre"] for c in contacts_response.data]
+                                ia_json["error"] = f"Contacto '{contact_name}' no encontrado"
+                                ia_json["message"] = f"❌ No encontré a '{contact_name}' en tus contactos."
+                                ia_json["available_contacts"] = available_contacts
+                                ia_json["suggestion"] = f"Contactos disponibles: {', '.join(available_contacts)}"
+                
+                except Exception as e:
+                    ia_json["error"] = f"Error al buscar contacto: {str(e)}"
+                    ia_json["message"] = "❌ Hubo un error al buscar en tus contactos"
+            else:
+                ia_json["error"] = "Supabase no está configurado"
+                ia_json["message"] = "❌ La base de datos no está disponible"
+        
+        # Listar usuarios
+        elif action == "list_users":
+            try:
+                if supabase:
+                    response = supabase.table("users").select("*").execute()
+                    ia_json["users"] = response.data
+                    ia_json["count"] = len(response.data)
+                    ia_json["message"] = f"Se encontraron {len(response.data)} usuarios registrados"
+                else:
+                    ia_json["error"] = "Supabase no está configurado"
+            except Exception as e:
+                ia_json["error"] = f"Error al obtener usuarios: {str(e)}"
+        
+        # Buscar usuario por wallet
+        elif action == "get_user":
+            wallet = ia_json.get("wallet_address")
+            if wallet and supabase:
+                try:
+                    response = supabase.table("users").select("*").eq("wallet_address", wallet).execute()
+                    if response.data:
+                        ia_json["user"] = response.data[0]
+                        ia_json["message"] = f"Usuario encontrado: {response.data[0].get('username')}"
+                    else:
+                        ia_json["message"] = "No se encontró ningún usuario con esa wallet"
+                except Exception as e:
+                    ia_json["error"] = f"Error al buscar usuario: {str(e)}"
+        
+        # Crear usuario
+        elif action == "create_user":
+            username = ia_json.get("username")
+            wallet = ia_json.get("wallet_address")
+            if username and wallet and supabase:
+                try:
+                    response = supabase.table("users").insert({
+                        "username": username,
+                        "wallet_address": wallet
+                    }).execute()
+                    ia_json["user"] = response.data[0]
+                    ia_json["message"] = f"✅ Usuario '{username}' creado exitosamente"
+                except Exception as e:
+                    error_msg = str(e)
+                    if "duplicate" in error_msg.lower():
+                        ia_json["error"] = "Esta wallet ya está registrada"
+                    else:
+                        ia_json["error"] = f"Error al crear usuario: {error_msg}"
+        
+        # Obtener contactos de un usuario
+        elif action == "get_contacts":
+            user_id = ia_json.get("user_id")
+            if user_id and supabase:
+                try:
+                    response = supabase.table("contacts").select("*").eq("user_id", user_id).execute()
+                    ia_json["contacts"] = response.data
+                    ia_json["count"] = len(response.data)
+                    ia_json["message"] = f"Se encontraron {len(response.data)} contactos"
+                except Exception as e:
+                    ia_json["error"] = f"Error al obtener contactos: {str(e)}"
+        
+        # Crear contacto
+        elif action == "create_contact":
+            user_id = ia_json.get("user_id")
+            nombre = ia_json.get("nombre")
+            wallet = ia_json.get("wallet_address")
+            if user_id and nombre and wallet and supabase:
+                try:
+                    response = supabase.table("contacts").insert({
+                        "user_id": user_id,
+                        "nombre": nombre,
+                        "wallet_address": wallet
+                    }).execute()
+                    ia_json["contact"] = response.data[0]
+                    ia_json["message"] = f"✅ Contacto '{nombre}' agregado exitosamente"
+                except Exception as e:
+                    error_msg = str(e)
+                    if "duplicate" in error_msg.lower():
+                        ia_json["error"] = "Este contacto ya existe"
+                    else:
+                        ia_json["error"] = f"Error al crear contacto: {error_msg}"
 
         return jsonify(ia_json)
 
@@ -341,6 +584,266 @@ def check_transaction():
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ======================================
+# 👥 ENDPOINTS DE SUPABASE - USUARIOS
+# ======================================
+
+@app.route("/users", methods=["GET"])
+def get_users():
+    """Obtiene todos los usuarios de Supabase."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Obtener todos los usuarios
+        response = supabase.table("users").select("*").execute()
+        
+        return jsonify({
+            "success": True,
+            "count": len(response.data),
+            "users": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/users/<user_id>", methods=["GET"])
+def get_user_by_id(user_id):
+    """Obtiene un usuario específico por su ID."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Obtener usuario por ID
+        response = supabase.table("users").select("*").eq("id", user_id).execute()
+        
+        if not response.data:
+            return jsonify({
+                "success": False,
+                "error": "Usuario no encontrado"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "user": response.data[0]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/users/wallet/<wallet_address>", methods=["GET"])
+def get_user_by_wallet(wallet_address):
+    """Obtiene un usuario por su dirección de wallet."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Obtener usuario por wallet address
+        response = supabase.table("users").select("*").eq("wallet_address", wallet_address).execute()
+        
+        if not response.data:
+            return jsonify({
+                "success": False,
+                "error": "Usuario no encontrado"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "user": response.data[0]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/users/<user_id>/contacts", methods=["GET"])
+def get_user_contacts(user_id):
+    """Obtiene todos los contactos de un usuario específico."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Obtener contactos del usuario
+        response = supabase.table("contacts").select("*").eq("user_id", user_id).execute()
+        
+        return jsonify({
+            "success": True,
+            "count": len(response.data),
+            "contacts": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/users/wallet/<wallet_address>/contacts", methods=["GET"])
+def get_user_contacts_by_wallet(wallet_address):
+    """Obtiene todos los contactos de un usuario por su wallet address."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # 1. Buscar el usuario por wallet
+        user_response = supabase.table("users").select("id, username").eq("wallet_address", wallet_address).execute()
+        
+        if not user_response.data:
+            return jsonify({
+                "success": False,
+                "error": "Usuario no encontrado con esa wallet"
+            }), 404
+        
+        user_id = user_response.data[0]["id"]
+        username = user_response.data[0]["username"]
+        
+        # 2. Obtener contactos del usuario
+        contacts_response = supabase.table("contacts").select("*").eq("user_id", user_id).execute()
+        
+        return jsonify({
+            "success": True,
+            "user": {
+                "id": user_id,
+                "username": username,
+                "wallet_address": wallet_address
+            },
+            "count": len(contacts_response.data),
+            "contacts": contacts_response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/users", methods=["POST"])
+def create_user():
+    """Crea un nuevo usuario."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        data = request.get_json()
+        username = data.get("username")
+        wallet_address = data.get("wallet_address")
+        
+        # Validaciones
+        if not username or not wallet_address:
+            return jsonify({
+                "success": False,
+                "error": "Se requieren username y wallet_address"
+            }), 400
+        
+        if not (wallet_address.startswith("ST") or wallet_address.startswith("SP")):
+            return jsonify({
+                "success": False,
+                "error": "Dirección de wallet inválida. Debe comenzar con ST o SP"
+            }), 400
+        
+        # Crear usuario
+        response = supabase.table("users").insert({
+            "username": username,
+            "wallet_address": wallet_address
+        }).execute()
+        
+        return jsonify({
+            "success": True,
+            "message": "Usuario creado correctamente",
+            "user": response.data[0]
+        }), 201
+        
+    except Exception as e:
+        error_message = str(e)
+        if "duplicate key value" in error_message:
+            return jsonify({
+                "success": False,
+                "error": "Esta wallet ya está registrada"
+            }), 409
+        return jsonify({
+            "success": False,
+            "error": error_message
+        }), 500
+
+
+@app.route("/contacts", methods=["POST"])
+def create_contact():
+    """Crea un nuevo contacto para un usuario."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        data = request.get_json()
+        user_id = data.get("user_id")
+        nombre = data.get("nombre")
+        wallet_address = data.get("wallet_address")
+        
+        # Validaciones
+        if not user_id or not nombre or not wallet_address:
+            return jsonify({
+                "success": False,
+                "error": "Se requieren user_id, nombre y wallet_address"
+            }), 400
+        
+        if not (wallet_address.startswith("ST") or wallet_address.startswith("SP")):
+            return jsonify({
+                "success": False,
+                "error": "Dirección de wallet inválida. Debe comenzar con ST o SP"
+            }), 400
+        
+        # Crear contacto
+        response = supabase.table("contacts").insert({
+            "user_id": user_id,
+            "nombre": nombre,
+            "wallet_address": wallet_address
+        }).execute()
+        
+        return jsonify({
+            "success": True,
+            "message": "Contacto creado correctamente",
+            "contact": response.data[0]
+        }), 201
+        
+    except Exception as e:
+        error_message = str(e)
+        if "duplicate key value" in error_message:
+            return jsonify({
+                "success": False,
+                "error": "Este contacto ya existe para el usuario"
+            }), 409
+        return jsonify({
+            "success": False,
+            "error": error_message
+        }), 500
 
 
 # ==========================

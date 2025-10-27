@@ -24,6 +24,8 @@ Backend Flask que proporciona una API REST para interactuar con contratos inteli
 - 🔗 **Integración con Stacks Blockchain**: Lee y ejecuta funciones de contratos inteligentes en Clarity
 - 💸 **Transferencias de STX**: Sistema completo para transferir STX entre wallets
 - 🤖 **IA con DeepSeek**: Interpreta comandos en lenguaje natural y los convierte en acciones sobre el contrato
+- 🗄️ **Base de Datos Supabase**: Gestión completa de usuarios y contactos
+- 🧠 **IA + Base de Datos**: La IA puede interactuar directamente con Supabase mediante lenguaje natural
 - 🌐 **API REST**: Endpoints simples y bien documentados
 - 🔒 **CORS habilitado**: Listo para integrarse con frontends web
 - 📊 **Parseo inteligente**: Convierte respuestas de Clarity a formatos legibles
@@ -38,6 +40,7 @@ Antes de comenzar, asegúrate de tener instalado:
 - Python 3.8 o superior
 - pip (gestor de paquetes de Python)
 - Una cuenta en [DeepSeek](https://platform.deepseek.com/) para obtener tu API Key
+- Una cuenta en [Supabase](https://supabase.com/) para la base de datos (opcional pero recomendado)
 - Un contrato inteligente desplegado en Stacks (testnet o mainnet)
 
 ## 📦 Instalación
@@ -416,6 +419,41 @@ Este proyecto está bajo la Licencia MIT. Consulta el archivo `LICENSE` para má
 - [Stacks](https://www.stacks.co/) - Blockchain para contratos inteligentes
 - [DeepSeek](https://www.deepseek.com/) - IA para procesamiento de lenguaje natural
 - [Flask](https://flask.palletsprojects.com/) - Framework web para Python
+- [Supabase](https://supabase.com/) - Base de datos PostgreSQL en la nube
+
+---
+
+## 📚 Documentación Adicional
+
+- **[SUPABASE_API.md](SUPABASE_API.md)** - Documentación completa de endpoints de Supabase
+- **[AI_DATABASE_EXAMPLES.md](AI_DATABASE_EXAMPLES.md)** - Ejemplos de cómo la IA interactúa con la base de datos
+- **[DEPLOYMENT.md](DEPLOYMENT.md)** - Guía de despliegue
+- **[INTEGRATION_GUIDE.md](INTEGRATION_GUIDE.md)** - Guía de integración con frontend
+
+---
+
+## 🧠 Nueva Funcionalidad: IA + Base de Datos
+
+La IA de DeepSeek ahora puede interactuar directamente con tu base de datos de Supabase usando lenguaje natural:
+
+```bash
+# Listar usuarios
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Muéstrame todos los usuarios"}'
+
+# Crear un usuario
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Registra un usuario llamado Juan con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6"}'
+
+# Buscar usuario
+curl -X POST http://localhost:5000/chat \
+  -H "Content-Type: application/json" \
+  -d '{"message": "Busca el usuario con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6"}'
+```
+
+**Ver más ejemplos en [AI_DATABASE_EXAMPLES.md](AI_DATABASE_EXAMPLES.md)**
 
 ---
 
