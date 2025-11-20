@@ -5,6 +5,7 @@ import os
 import requests
 import json
 from supabase import create_client, Client
+from web3 import Web3
 
 # ✅ Cargar variables del entorno (.env)
 load_dotenv()
@@ -13,17 +14,86 @@ app = Flask(__name__)
 CORS(app)
 
 # ==========================
-# 🔧 Configuración general
+# 🔧 Configuración Scroll Sepolia
 # ==========================
 
-CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS")
-CONTRACT_NAME = os.getenv("CONTRACT_NAME")
-NETWORK = os.getenv("STACKS_NETWORK", "testnet")
-STACKS_API = "https://api.testnet.hiro.so" if NETWORK == "testnet" else "https://api.hiro.so"
+# Configuración de Scroll Sepolia
+SCROLL_RPC_URL = os.getenv("SCROLL_RPC_URL", "https://sepolia-rpc.scroll.io")
+CONTRACT_ADDRESS = os.getenv("CONTRACT_ADDRESS", "0xD8c566986a9dD489369129b5156fEbF09b3751FD")
+PRIVATE_KEY = os.getenv("PRIVATE_KEY", "")  # Private key para firmar transacciones (opcional)
+NETWORK = os.getenv("NETWORK", "scroll-sepolia")
+CHAIN_ID = int(os.getenv("CHAIN_ID", "534351"))  # Scroll Sepolia Chain ID
 
-# Contrato de transferencias STX
-TRANSFER_CONTRACT_ADDRESS = "ST3AQ7KXWA7KGQ67EX2MFYR1E3231B9S4KY6EFB1R"
-TRANSFER_CONTRACT_NAME = "traspaso-v2"
+# Inicializar Web3
+w3 = Web3(Web3.HTTPProvider(SCROLL_RPC_URL))
+
+# ABI del contrato STXTransfer
+CONTRACT_ABI = [
+    {
+        "inputs": [{"internalType": "address", "name": "recipient", "type": "address"}],
+        "name": "transferSTX",
+        "outputs": [{"internalType": "bool", "name": "success", "type": "bool"}],
+        "stateMutability": "payable",
+        "type": "function"
+    },
+    {
+        "inputs": [
+            {"internalType": "address", "name": "recipient", "type": "address"},
+            {"internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "transferSTXWithAmount",
+        "outputs": [{"internalType": "bool", "name": "success", "type": "bool"}],
+        "stateMutability": "nonpayable",
+        "type": "function"
+    },
+    {
+        "inputs": [{"internalType": "address", "name": "account", "type": "address"}],
+        "name": "getBalance",
+        "outputs": [{"internalType": "uint256", "name": "balance", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getSenderInfo",
+        "outputs": [{"internalType": "address", "name": "sender", "type": "address"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "inputs": [],
+        "name": "getContractBalance",
+        "outputs": [{"internalType": "uint256", "name": "", "type": "uint256"}],
+        "stateMutability": "view",
+        "type": "function"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
+            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"}
+        ],
+        "name": "TransferCompleted",
+        "type": "event"
+    },
+    {
+        "anonymous": False,
+        "inputs": [
+            {"indexed": True, "internalType": "address", "name": "sender", "type": "address"},
+            {"indexed": True, "internalType": "address", "name": "recipient", "type": "address"},
+            {"indexed": False, "internalType": "uint256", "name": "amount", "type": "uint256"},
+            {"indexed": False, "internalType": "uint256", "name": "errorCode", "type": "uint256"}
+        ],
+        "name": "TransferFailed",
+        "type": "event"
+    },
+    {"stateMutability": "payable", "type": "receive"},
+    {"stateMutability": "payable", "type": "fallback"}
+]
+
+# Instanciar contrato
+contract = w3.eth.contract(address=Web3.to_checksum_address(CONTRACT_ADDRESS), abi=CONTRACT_ABI)
 
 # DeepSeek API
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY")
@@ -36,7 +106,11 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 # Inicializar cliente de Supabase
 supabase: Client = None
 if SUPABASE_URL and SUPABASE_KEY:
-    supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+    try:
+        supabase = create_client(SUPABASE_URL, SUPABASE_KEY)
+        print(f"✅ Supabase conectado: {SUPABASE_URL}")
+    except Exception as e:
+        print(f"⚠️ Error al conectar con Supabase: {e}")
 
 # ==========================
 # 🏠 Rutas del backend
@@ -49,58 +123,24 @@ def home():
 
 
 # ======================================
-# 📊 Leer el contador desde el contrato
+# 📊 Obtener información de la red
 # ======================================
-@app.route("/get-count", methods=["GET"])
-def get_count():
+@app.route("/network-info", methods=["GET"])
+def network_info():
+    """Obtiene información sobre la red Scroll Sepolia."""
     try:
-        url = f"{STACKS_API}/v2/contracts/call-read/{CONTRACT_ADDRESS}/{CONTRACT_NAME}/get-count"
-        payload = {"sender": CONTRACT_ADDRESS, "arguments": []}
-        res = requests.post(url, json=payload)
-        data = res.json()
-
-        result_raw = data.get("result", "")
+        is_connected = w3.is_connected()
+        latest_block = w3.eth.block_number if is_connected else None
         
-        # Debug: ver qué devuelve realmente el contrato
-        print(f"Respuesta completa del contrato: {data}")
-        print(f"Result raw: {result_raw}")
-        print(f"Tipo de result_raw: {type(result_raw)}")
-        
-        # Parsear formatos de Clarity
-        import re
-        
-        # Si result_raw es un string
-        if isinstance(result_raw, str):
-            # Buscar patrón "u" seguido de números (formato Clarity)
-            match = re.search(r'u(\d+)', result_raw)
-            if match:
-                value = int(match.group(1))
-            # Si es hexadecimal
-            elif result_raw.startswith("0x"):
-                # Convertir de hex, pero el valor puede ser un uint de Clarity codificado
-                hex_value = int(result_raw, 16)
-                # Si el número es muy grande, puede ser que los últimos bytes sean el valor real
-                if hex_value > 10**20:  # Número muy grande
-                    # Intentar extraer los últimos 8 bytes (64 bits)
-                    value = hex_value & 0xFFFFFFFFFFFFFFFF
-                    # Si aún es muy grande, tomar módulo 1000 como último recurso
-                    if value > 10**15:
-                        value = hex_value % 1000
-                else:
-                    value = hex_value
-            else:
-                # Intentar extraer cualquier número
-                numbers = re.findall(r'\d+', result_raw)
-                value = int(numbers[0]) if numbers else 0
-        else:
-            # Si es un número directamente
-            value = int(result_raw)
-            # Si es ese número gigante específico, es posible que sea un encoding
-            if value == 610126283889242664989830671125160403140615:
-                # Este parece ser un valor codificado, extraer el valor real
-                value = 7  # Por ahora hardcodeado basado en tu ejemplo
-
-        return jsonify({"count": value, "raw_debug": result_raw})
+        return jsonify({
+            "network": NETWORK,
+            "chain_id": CHAIN_ID,
+            "rpc_url": SCROLL_RPC_URL,
+            "contract_address": CONTRACT_ADDRESS,
+            "is_connected": is_connected,
+            "latest_block": latest_block,
+            "explorer_url": f"https://sepolia.scrollscan.com/address/{CONTRACT_ADDRESS}"
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -132,17 +172,16 @@ def chat():
                     "role": "system",
                     "content": (
                         "Eres un asistente inteligente para interpretar comandos hacia contratos inteligentes "
-                        "en la blockchain de Stacks y gestionar usuarios en la base de datos. "
+                        "en la blockchain de Scroll Sepolia (una red compatible con Ethereum) y gestionar usuarios en la base de datos. "
                         f"La wallet del usuario conectado es: {sender_wallet if sender_wallet else 'NO PROPORCIONADA'}. "
                         "Analiza los comandos del usuario y extrae información relevante. "
                         "Devuelve SIEMPRE una respuesta JSON con las siguientes claves:\n\n"
                         
                         "ACCIONES DISPONIBLES:\n"
-                        "- 'transfer': Transferir STX a una wallet directamente\n"
-                        "- 'transfer_to_contact': Transferir STX a un contacto por su nombre\n"
+                        "- 'transfer': Transferir ETH a una wallet directamente (direcciones que empiezan con 0x)\n"
+                        "- 'transfer_to_contact': Transferir ETH a un contacto por su nombre\n"
                         "- 'balance': Consultar balance de una wallet\n"
-                        "- 'increment': Incrementar contador del contrato\n"
-                        "- 'read': Leer valor del contador\n"
+                        "- 'network_info': Obtener información de la red Scroll Sepolia\n"
                         "- 'list_users': Listar todos los usuarios\n"
                         "- 'get_user': Obtener info de un usuario específico\n"
                         "- 'create_user': Crear un nuevo usuario\n"
@@ -157,38 +196,40 @@ def chat():
                         
                         "EJEMPLOS:\n\n"
                         
-                        "1. Transferencia STX (por wallet):\n"
-                        "Usuario: 'Transfiere 50 STX a ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
-                        "Respuesta: {\"action\": \"transfer\", \"recipient\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"amount\": 50, \"message\": \"Transferir 50 STX\"}\n\n"
+                        "1. Transferencia ETH (por wallet):\n"
+                        "Usuario: 'Transfiere 0.5 ETH a 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'\n"
+                        "Respuesta: {\"action\": \"transfer\", \"recipient\": \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\", \"amount\": 0.5, \"message\": \"Transferir 0.5 ETH\"}\n\n"
                         
-                        "1b. Transferencia STX (por nombre de contacto):\n"
-                        "Usuario: 'Envía 10 STX a Andrés'\n"
-                        "Respuesta: {\"action\": \"transfer_to_contact\", \"contact_name\": \"Andrés\", \"amount\": 10, \"sender_wallet\": \"ST2PQHQ...\", \"message\": \"Buscar contacto Andrés y transferir 10 STX\"}\n"
+                        "1b. Transferencia ETH (por nombre de contacto):\n"
+                        "Usuario: 'Envía 0.1 ETH a Andrés'\n"
+                        "Respuesta: {\"action\": \"transfer_to_contact\", \"contact_name\": \"Andrés\", \"amount\": 0.1, \"sender_wallet\": \"0x123...\", \"message\": \"Buscar contacto Andrés y transferir 0.1 ETH\"}\n"
                         "IMPORTANTE: Para esta acción, SIEMPRE incluye el sender_wallet que viene en el contexto del mensaje.\n\n"
                         
                         "2. Balance:\n"
-                        "Usuario: '¿Cuál es el balance de ST1234...?'\n"
-                        "Respuesta: {\"action\": \"balance\", \"address\": \"ST1234...\", \"message\": \"Consultando balance\"}\n\n"
+                        "Usuario: '¿Cuál es el balance de 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb?'\n"
+                        "Respuesta: {\"action\": \"balance\", \"address\": \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\", \"message\": \"Consultando balance\"}\n\n"
                         
                         "3. Listar usuarios:\n"
                         "Usuario: 'Muéstrame todos los usuarios' o '¿Cuántos usuarios hay?'\n"
                         "Respuesta: {\"action\": \"list_users\", \"message\": \"Obteniendo lista de usuarios\"}\n\n"
                         
                         "4. Buscar usuario:\n"
-                        "Usuario: 'Busca el usuario con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
-                        "Respuesta: {\"action\": \"get_user\", \"wallet_address\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"message\": \"Buscando usuario\"}\n\n"
+                        "Usuario: 'Busca el usuario con wallet 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'\n"
+                        "Respuesta: {\"action\": \"get_user\", \"wallet_address\": \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\", \"message\": \"Buscando usuario\"}\n\n"
                         
                         "5. Crear usuario:\n"
-                        "Usuario: 'Registra un usuario llamado Juan con wallet ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6'\n"
-                        "Respuesta: {\"action\": \"create_user\", \"username\": \"Juan\", \"wallet_address\": \"ST2PQHQ0EYR93KSP0B6AN9AHEJ1K3EBRJP02HPGK6\", \"message\": \"Creando usuario Juan\"}\n\n"
+                        "Usuario: 'Registra un usuario llamado Juan con wallet 0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb'\n"
+                        "Respuesta: {\"action\": \"create_user\", \"username\": \"Juan\", \"wallet_address\": \"0x742d35Cc6634C0532925a3b844Bc9e7595f0bEb\", \"message\": \"Creando usuario Juan\"}\n\n"
                         
                         "6. Ver contactos:\n"
                         "Usuario: 'Muéstrame los contactos del usuario 123e4567-e89b-12d3-a456-426614174000'\n"
                         "Respuesta: {\"action\": \"get_contacts\", \"user_id\": \"123e4567-e89b-12d3-a456-426614174000\", \"message\": \"Obteniendo contactos\"}\n\n"
                         
                         "7. Crear contacto:\n"
-                        "Usuario: 'Agrega a María con wallet ST1PQHQ... como contacto del usuario 123e4567...'\n"
-                        "Respuesta: {\"action\": \"create_contact\", \"user_id\": \"123e4567...\", \"nombre\": \"María\", \"wallet_address\": \"ST1PQHQ...\", \"message\": \"Agregando contacto\"}"
+                        "Usuario: 'Agrega a María con wallet 0x742d35... como contacto del usuario 123e4567...'\n"
+                        "Respuesta: {\"action\": \"create_contact\", \"user_id\": \"123e4567...\", \"nombre\": \"María\", \"wallet_address\": \"0x742d35...\", \"message\": \"Agregando contacto\"}\n\n"
+                        
+                        "IMPORTANTE: Las direcciones Ethereum siempre empiezan con '0x' seguido de 40 caracteres hexadecimales."
                     )
                 },
                 {"role": "user", "content": user_message}
@@ -229,17 +270,15 @@ def chat():
             # Detectar si menciona "enviar" o "transferir" con un nombre (no una wallet)
             if ("transferir" in msg_lower or "transfiere" in msg_lower or 
                 "enviar" in msg_lower or "envía" in msg_lower or "envia" in msg_lower):
-                # Si NO contiene una wallet address (ST... o SP...)
-                if not ("ST" in user_message.upper() or "SP" in user_message.upper()):
+                # Si NO contiene una wallet address Ethereum (0x...)
+                if "0x" not in user_message.lower():
                     action = "transfer_to_contact"
                 else:
                     action = "transfer"
             elif "balance" in msg_lower or "saldo" in msg_lower:
                 action = "balance"
-            elif "incrementa" in msg_lower or "aumenta" in msg_lower:
-                action = "increment"
-            elif "contador" in msg_lower or "valor" in msg_lower:
-                action = "read"
+            elif "red" in msg_lower or "network" in msg_lower or "info" in msg_lower:
+                action = "network_info"
             elif "usuarios" in msg_lower or "listar usuarios" in msg_lower or "ver usuarios" in msg_lower:
                 action = "list_users"
             elif "crear usuario" in msg_lower or "registrar usuario" in msg_lower or "nuevo usuario" in msg_lower:
@@ -431,9 +470,51 @@ def chat():
 # ======================================
 # 💰 Verificar balance de una wallet
 # ======================================
+@app.route("/api/balance/<address>", methods=["GET"])
+def get_balance(address):
+    """Consulta el balance de ETH de una dirección en Scroll Sepolia."""
+    try:
+        if not address:
+            return jsonify({"error": "Se requiere una dirección"}), 400
+        
+        # Validar formato de dirección Ethereum
+        if not Web3.is_address(address):
+            return jsonify({"error": "Dirección inválida. Debe ser una dirección Ethereum válida"}), 400
+        
+        # Convertir a checksum address
+        checksum_address = Web3.to_checksum_address(address)
+        
+        # Obtener balance nativo (ETH)
+        balance_wei = w3.eth.get_balance(checksum_address)
+        balance_eth = w3.from_wei(balance_wei, 'ether')
+        
+        # Obtener balance según el contrato (si es diferente)
+        try:
+            contract_balance_wei = contract.functions.getBalance(checksum_address).call()
+            contract_balance_eth = w3.from_wei(contract_balance_wei, 'ether')
+        except:
+            contract_balance_wei = balance_wei
+            contract_balance_eth = balance_eth
+        
+        return jsonify({
+            "address": checksum_address,
+            "balance": float(balance_eth),
+            "balance_wei": str(balance_wei),
+            "contract_balance": float(contract_balance_eth),
+            "contract_balance_wei": str(contract_balance_wei),
+            "message": f"Balance: {balance_eth} ETH",
+            "network": NETWORK,
+            "chain_id": CHAIN_ID
+        })
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# Ruta alternativa POST para compatibilidad
 @app.route("/get-balance", methods=["POST"])
-def get_balance():
-    """Consulta el balance de STX de una dirección."""
+def get_balance_post():
+    """Consulta el balance de ETH (versión POST)."""
     try:
         data = request.get_json()
         address = data.get("address", "")
@@ -441,38 +522,8 @@ def get_balance():
         if not address:
             return jsonify({"error": "Se requiere una dirección"}), 400
         
-        # Validar formato de dirección
-        if not (address.startswith("ST") or address.startswith("SP")):
-            return jsonify({"error": "Dirección inválida. Debe comenzar con ST o SP"}), 400
-        
-        # Llamar a la función read-only del contrato
-        url = f"{STACKS_API}/v2/contracts/call-read/{TRANSFER_CONTRACT_ADDRESS}/{TRANSFER_CONTRACT_NAME}/get-balance"
-        payload = {
-            "sender": address,
-            "arguments": [f"'{address}"]
-        }
-        
-        response = requests.post(url, json=payload)
-        result = response.json()
-        
-        # Parsear el resultado
-        import re
-        result_raw = result.get("result", "")
-        
-        # Extraer el balance (formato: "ok u123456")
-        match = re.search(r'u(\d+)', result_raw)
-        if match:
-            balance_microstx = int(match.group(1))
-            balance_stx = balance_microstx / 1_000_000  # Convertir de microSTX a STX
-        else:
-            balance_stx = 0
-        
-        return jsonify({
-            "address": address,
-            "balance": balance_stx,
-            "balance_microstx": balance_microstx if match else 0,
-            "message": f"Balance: {balance_stx} STX"
-        })
+        # Redirigir a la función principal
+        return get_balance(address)
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -483,7 +534,7 @@ def get_balance():
 # ======================================
 @app.route("/prepare-transfer", methods=["POST"])
 def prepare_transfer():
-    """Prepara los datos para una transferencia de STX."""
+    """Prepara los datos para una transferencia de ETH en Scroll Sepolia."""
     try:
         data = request.get_json()
         recipient = data.get("recipient", "")
@@ -496,35 +547,56 @@ def prepare_transfer():
                 "error": "Se requieren las direcciones del remitente y destinatario"
             }), 400
         
-        if not (recipient.startswith("ST") or recipient.startswith("SP")):
+        if not Web3.is_address(recipient) or not Web3.is_address(sender):
             return jsonify({
-                "error": "Dirección del destinatario inválida. Debe comenzar con ST o SP"
+                "error": "Dirección inválida. Deben ser direcciones Ethereum válidas"
             }), 400
         
         if amount <= 0:
             return jsonify({
-                "error": "El monto debe ser mayor a 0 STX"
+                "error": "El monto debe ser mayor a 0 ETH"
             }), 400
         
-        # Convertir STX a microSTX (1 STX = 1,000,000 microSTX)
-        amount_microstx = int(amount * 1_000_000)
+        # Convertir a checksum addresses
+        recipient_checksum = Web3.to_checksum_address(recipient)
+        sender_checksum = Web3.to_checksum_address(sender)
+        
+        # Convertir ETH a Wei
+        amount_wei = w3.to_wei(amount, 'ether')
+        
+        # Estimar gas
+        try:
+            gas_estimate = contract.functions.transferSTX(recipient_checksum).estimate_gas({
+                'from': sender_checksum,
+                'value': amount_wei
+            })
+            
+            gas_price = w3.eth.gas_price
+            estimated_fee_wei = gas_estimate * gas_price
+            estimated_fee_eth = w3.from_wei(estimated_fee_wei, 'ether')
+        except Exception as e:
+            gas_estimate = 100000  # Estimación por defecto
+            gas_price = w3.eth.gas_price
+            estimated_fee_wei = gas_estimate * gas_price
+            estimated_fee_eth = w3.from_wei(estimated_fee_wei, 'ether')
         
         # Preparar los datos de la transacción
         transaction_data = {
-            "contract_address": TRANSFER_CONTRACT_ADDRESS,
-            "contract_name": TRANSFER_CONTRACT_NAME,
-            "function_name": "transfer-stx",
-            "function_args": [
-                f"'{recipient}",  # Principal del destinatario
-                f"u{amount_microstx}"  # Amount en microSTX
-            ],
-            "sender": sender,
-            "recipient": recipient,
+            "contract_address": CONTRACT_ADDRESS,
+            "function_name": "transferSTX",
+            "sender": sender_checksum,
+            "recipient": recipient_checksum,
             "amount": amount,
-            "amount_microstx": amount_microstx,
+            "amount_wei": str(amount_wei),
             "network": NETWORK,
-            "post_condition_mode": "allow",
-            "message": f"¿Deseas aprobar la transferencia de {amount} STX a {recipient}?"
+            "chain_id": CHAIN_ID,
+            "gas_estimate": gas_estimate,
+            "gas_price_wei": str(gas_price),
+            "gas_price_gwei": float(w3.from_wei(gas_price, 'gwei')),
+            "estimated_fee_eth": float(estimated_fee_eth),
+            "estimated_fee_wei": str(estimated_fee_wei),
+            "explorer_url": f"https://sepolia.scrollscan.com/address/{CONTRACT_ADDRESS}",
+            "message": f"¿Deseas aprobar la transferencia de {amount} ETH a {recipient_checksum}?"
         }
         
         return jsonify(transaction_data)
@@ -538,7 +610,7 @@ def prepare_transfer():
 # ======================================
 @app.route("/check-transaction", methods=["POST"])
 def check_transaction():
-    """Verifica el estado de una transacción en la blockchain."""
+    """Verifica el estado de una transacción en Scroll Sepolia."""
     try:
         data = request.get_json()
         txid = data.get("txid", "")
@@ -546,44 +618,150 @@ def check_transaction():
         if not txid:
             return jsonify({"error": "Se requiere el ID de la transacción"}), 400
         
-        # Consultar la transacción en la API de Stacks
-        url = f"{STACKS_API}/extended/v1/tx/{txid}"
-        response = requests.get(url)
-        
-        if response.status_code == 404:
-            return jsonify({
-                "status": "pending",
-                "message": "Transacción pendiente o no encontrada",
-                "txid": txid
-            })
-        
-        tx_data = response.json()
-        tx_status = tx_data.get("tx_status", "unknown")
-        
-        # Construir URL del explorer
-        explorer_base = "https://explorer.hiro.so"
-        chain = "mainnet" if NETWORK == "mainnet" else "testnet"
-        explorer_url = f"{explorer_base}/txid/{txid}?chain={chain}"
-        
-        result = {
-            "txid": txid,
-            "status": tx_status,
-            "block_height": tx_data.get("block_height"),
-            "block_hash": tx_data.get("block_hash"),
-            "explorer_url": explorer_url,
-        }
-        
-        if tx_status == "success":
-            result["message"] = "✅ Transacción completada correctamente"
-        elif tx_status == "pending":
-            result["message"] = "⏳ Transacción pendiente de confirmación"
-        else:
-            result["message"] = f"❌ Transacción fallida: {tx_status}"
-        
-        return jsonify(result)
+        # Obtener recibo de transacción
+        try:
+            tx_receipt = w3.eth.get_transaction_receipt(txid)
+            tx = w3.eth.get_transaction(txid)
+            
+            # Determinar status
+            if tx_receipt['status'] == 1:
+                status = "success"
+                message = "✅ Transacción completada correctamente"
+            else:
+                status = "failed"
+                message = "❌ Transacción fallida"
+            
+            # Construir URL del explorer
+            explorer_url = f"https://sepolia.scrollscan.com/tx/{txid}"
+            
+            result = {
+                "txid": txid,
+                "status": status,
+                "block_number": tx_receipt['blockNumber'],
+                "block_hash": tx_receipt['blockHash'].hex(),
+                "from": tx_receipt['from'],
+                "to": tx_receipt['to'],
+                "gas_used": tx_receipt['gasUsed'],
+                "effective_gas_price": tx_receipt['effectiveGasPrice'],
+                "value": str(tx['value']),
+                "value_eth": float(w3.from_wei(tx['value'], 'ether')),
+                "explorer_url": explorer_url,
+                "message": message,
+                "network": NETWORK,
+                "chain_id": CHAIN_ID
+            }
+            
+            return jsonify(result)
+            
+        except Exception as e:
+            # Si no se encuentra el recibo, la transacción está pendiente
+            error_str = str(e)
+            if "not found" in error_str.lower() or "not been mined" in error_str.lower():
+                return jsonify({
+                    "txid": txid,
+                    "status": "pending",
+                    "message": "⏳ Transacción pendiente de confirmación",
+                    "explorer_url": f"https://sepolia.scrollscan.com/tx/{txid}",
+                    "network": NETWORK,
+                    "chain_id": CHAIN_ID
+                })
+            else:
+                raise e
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ======================================
+# 🚀 Ejecutar transferencia (endpoint simplificado)
+# ======================================
+@app.route("/api/transfer", methods=["POST"])
+def execute_transfer():
+    """Ejecuta una transferencia de ETH usando el contrato en Scroll Sepolia."""
+    try:
+        data = request.get_json()
+        recipient = data.get("recipient", "")
+        amount = data.get("amount", 0)
+        
+        # Validaciones
+        if not recipient:
+            return jsonify({
+                "success": False,
+                "error": "Se requiere la dirección del destinatario"
+            }), 400
+        
+        if not Web3.is_address(recipient):
+            return jsonify({
+                "success": False,
+                "error": "Dirección de destinatario inválida"
+            }), 400
+        
+        if amount <= 0:
+            return jsonify({
+                "success": False,
+                "error": "El monto debe ser mayor a 0 ETH"
+            }), 400
+        
+        # Convertir a checksum address
+        recipient_checksum = Web3.to_checksum_address(recipient)
+        amount_wei = w3.to_wei(amount, 'ether')
+        
+        # Verificar que tengamos private key configurada
+        if not PRIVATE_KEY:
+            return jsonify({
+                "success": False,
+                "error": "Private key no configurada. Esta es una operación de solo lectura."
+            }), 500
+        
+        # Obtener cuenta del remitente
+        account = w3.eth.account.from_key(PRIVATE_KEY)
+        sender_address = account.address
+        
+        # Verificar balance suficiente
+        balance = w3.eth.get_balance(sender_address)
+        if balance < amount_wei:
+            return jsonify({
+                "success": False,
+                "error": f"Balance insuficiente. Tienes {w3.from_wei(balance, 'ether')} ETH"
+            }), 400
+        
+        # Construir transacción
+        nonce = w3.eth.get_transaction_count(sender_address)
+        
+        transaction = contract.functions.transferSTX(recipient_checksum).build_transaction({
+            'from': sender_address,
+            'value': amount_wei,
+            'gas': 100000,
+            'gasPrice': w3.eth.gas_price,
+            'nonce': nonce,
+            'chainId': CHAIN_ID
+        })
+        
+        # Firmar transacción
+        signed_txn = w3.eth.account.sign_transaction(transaction, PRIVATE_KEY)
+        
+        # Enviar transacción
+        tx_hash = w3.eth.send_raw_transaction(signed_txn.raw_transaction)
+        tx_hash_hex = tx_hash.hex()
+        
+        # Esperar confirmación (opcional, comentado para no bloquear)
+        # tx_receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        
+        return jsonify({
+            "success": True,
+            "txHash": tx_hash_hex,
+            "amount": amount,
+            "recipient": recipient_checksum,
+            "explorer_url": f"https://sepolia.scrollscan.com/tx/{tx_hash_hex}",
+            "message": f"Transferencia de {amount} ETH enviada correctamente",
+            "network": NETWORK
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
 
 
 # ======================================
@@ -762,11 +940,14 @@ def create_user():
                 "error": "Se requieren username y wallet_address"
             }), 400
         
-        if not (wallet_address.startswith("ST") or wallet_address.startswith("SP")):
+        if not Web3.is_address(wallet_address):
             return jsonify({
                 "success": False,
-                "error": "Dirección de wallet inválida. Debe comenzar con ST o SP"
+                "error": "Dirección de wallet inválida. Debe ser una dirección Ethereum válida (0x...)"
             }), 400
+        
+        # Normalizar a checksum address
+        wallet_address = Web3.to_checksum_address(wallet_address)
         
         # Crear usuario
         response = supabase.table("users").insert({
@@ -814,11 +995,14 @@ def create_contact():
                 "error": "Se requieren user_id, nombre y wallet_address"
             }), 400
         
-        if not (wallet_address.startswith("ST") or wallet_address.startswith("SP")):
+        if not Web3.is_address(wallet_address):
             return jsonify({
                 "success": False,
-                "error": "Dirección de wallet inválida. Debe comenzar con ST o SP"
+                "error": "Dirección de wallet inválida. Debe ser una dirección Ethereum válida (0x...)"
             }), 400
+        
+        # Normalizar a checksum address
+        wallet_address = Web3.to_checksum_address(wallet_address)
         
         # Crear contacto
         response = supabase.table("contacts").insert({
@@ -843,6 +1027,178 @@ def create_contact():
         return jsonify({
             "success": False,
             "error": error_message
+        }), 500
+
+
+# ======================================
+# 💸 ENDPOINTS DE TRANSACCIONES
+# ======================================
+
+@app.route("/transacciones", methods=["GET"])
+def get_transacciones():
+    """Obtiene todas las transacciones."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado"
+            }), 500
+        
+        response = supabase.table("transacciones").select("*").order("fecha", desc=True).execute()
+        
+        return jsonify({
+            "success": True,
+            "count": len(response.data),
+            "transacciones": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/transacciones/<wallet>", methods=["GET"])
+def get_transacciones_by_wallet(wallet):
+    """Obtiene transacciones de una wallet específica (como emisor o receptor)."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado"
+            }), 500
+        
+        # Buscar transacciones donde la wallet sea emisor o receptor
+        response = supabase.table("transacciones").select("*").or_(
+            f"wallet_emisor.eq.{wallet},wallet_receptor.eq.{wallet}"
+        ).order("fecha", desc=True).execute()
+        
+        return jsonify({
+            "success": True,
+            "wallet": wallet,
+            "count": len(response.data),
+            "transacciones": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/transacciones", methods=["POST"])
+def create_transaccion():
+    """Crea una nueva transacción."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado"
+            }), 500
+        
+        data = request.get_json()
+        wallet_emisor = data.get("wallet_emisor")
+        wallet_receptor = data.get("wallet_receptor")
+        monto = data.get("monto")
+        estado = data.get("estado", "pendiente")  # Default: pendiente
+        link_verificacion = data.get("link_verificacion", "")
+        
+        # Validaciones
+        if not wallet_emisor or not wallet_receptor:
+            return jsonify({
+                "success": False,
+                "error": "Se requieren wallet_emisor y wallet_receptor"
+            }), 400
+        
+        if not monto or monto <= 0:
+            return jsonify({
+                "success": False,
+                "error": "El monto debe ser mayor a 0"
+            }), 400
+        
+        # Validar direcciones Ethereum
+        if not Web3.is_address(wallet_emisor) or not Web3.is_address(wallet_receptor):
+            return jsonify({
+                "success": False,
+                "error": "Las direcciones deben ser válidas (formato 0x...)"
+            }), 400
+        
+        # Normalizar direcciones
+        wallet_emisor = Web3.to_checksum_address(wallet_emisor)
+        wallet_receptor = Web3.to_checksum_address(wallet_receptor)
+        
+        # Crear transacción
+        from datetime import datetime
+        response = supabase.table("transacciones").insert({
+            "wallet_emisor": wallet_emisor,
+            "wallet_receptor": wallet_receptor,
+            "monto": float(monto),
+            "estado": estado,
+            "fecha": datetime.now().isoformat(),
+            "link_verificacion": link_verificacion
+        }).execute()
+        
+        return jsonify({
+            "success": True,
+            "message": "Transacción registrada correctamente",
+            "transaccion": response.data[0]
+        }), 201
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/transacciones/<transaccion_id>", methods=["PUT"])
+def update_transaccion(transaccion_id):
+    """Actualiza el estado de una transacción."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado"
+            }), 500
+        
+        data = request.get_json()
+        estado = data.get("estado")
+        link_verificacion = data.get("link_verificacion")
+        
+        if not estado:
+            return jsonify({
+                "success": False,
+                "error": "Se requiere el campo 'estado'"
+            }), 400
+        
+        # Validar estado
+        if estado not in ["pendiente", "progreso", "completado"]:
+            return jsonify({
+                "success": False,
+                "error": "Estado inválido. Debe ser: pendiente, progreso o completado"
+            }), 400
+        
+        # Actualizar transacción
+        update_data = {"estado": estado}
+        if link_verificacion:
+            update_data["link_verificacion"] = link_verificacion
+        
+        response = supabase.table("transacciones").update(update_data).eq("id", transaccion_id).execute()
+        
+        if not response.data:
+            return jsonify({
+                "success": False,
+                "error": "Transacción no encontrada"
+            }), 404
+        
+        return jsonify({
+            "success": True,
+            "message": "Transacción actualizada correctamente",
+            "transaccion": response.data[0]
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
         }), 500
 
 
