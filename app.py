@@ -1202,6 +1202,740 @@ def update_transaccion(transaccion_id):
         }), 500
 
 
+# ======================================
+# 📇 ENDPOINTS DE CONTACT_WALLETS
+# ======================================
+
+@app.route("/contact-wallets", methods=["POST"])
+def add_contact_wallet():
+    """Agrega un nuevo contacto a la tabla contact_wallets."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        data = request.get_json()
+        nombre_wallet_agregada = data.get("nombre_wallet_agregada")
+        wallet_agregada = data.get("wallet_agregada")
+        wallet_quien_agrego = data.get("wallet_quien_agrego")
+        
+        # Validaciones
+        if not nombre_wallet_agregada or not wallet_agregada or not wallet_quien_agrego:
+            return jsonify({
+                "success": False,
+                "error": "Se requieren nombre_wallet_agregada, wallet_agregada y wallet_quien_agrego"
+            }), 400
+        
+        if not Web3.is_address(wallet_agregada):
+            return jsonify({
+                "success": False,
+                "error": "wallet_agregada inválida. Debe ser una dirección Ethereum válida (0x...)"
+            }), 400
+        
+        if not Web3.is_address(wallet_quien_agrego):
+            return jsonify({
+                "success": False,
+                "error": "wallet_quien_agrego inválida. Debe ser una dirección Ethereum válida (0x...)"
+            }), 400
+        
+        # Normalizar a checksum address
+        wallet_agregada = Web3.to_checksum_address(wallet_agregada)
+        wallet_quien_agrego = Web3.to_checksum_address(wallet_quien_agrego)
+        
+        # Crear contacto en contact_wallets
+        response = supabase.table("contact_wallets").insert({
+            "nombre_wallet_agregada": nombre_wallet_agregada,
+            "wallet_agregada": wallet_agregada,
+            "wallet_quien_agrego": wallet_quien_agrego
+        }).execute()
+        
+        return jsonify({
+            "success": True,
+            "message": "Contacto agregado correctamente",
+            "contact": response.data[0]
+        }), 201
+        
+    except Exception as e:
+        error_message = str(e)
+        if "duplicate key value" in error_message:
+            return jsonify({
+                "success": False,
+                "error": "Este contacto ya existe"
+            }), 409
+        return jsonify({
+            "success": False,
+            "error": error_message
+        }), 500
+
+
+@app.route("/contact-wallets/<wallet_address>", methods=["GET"])
+def get_contact_wallets(wallet_address):
+    """Obtiene todos los contactos agregados por una wallet específica."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Validar formato de wallet
+        if not Web3.is_address(wallet_address):
+            return jsonify({
+                "success": False,
+                "error": "Dirección de wallet inválida"
+            }), 400
+        
+        # Normalizar a checksum address
+        wallet_address = Web3.to_checksum_address(wallet_address)
+        
+        # Obtener contactos de la wallet
+        response = supabase.table("contact_wallets").select("*").eq(
+            "wallet_quien_agrego", wallet_address
+        ).order("fecha_creacion", desc=True).execute()
+        
+        return jsonify({
+            "success": True,
+            "wallet": wallet_address,
+            "count": len(response.data),
+            "contacts": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/contact-wallets", methods=["GET"])
+def get_all_contact_wallets():
+    """Obtiene todos los contactos de la tabla contact_wallets."""
+    try:
+        if not supabase:
+            return jsonify({
+                "error": "Supabase no está configurado. Verifica las variables SUPABASE_URL y SUPABASE_KEY"
+            }), 500
+        
+        # Obtener todos los contactos
+        response = supabase.table("contact_wallets").select("*").order(
+            "fecha_creacion", desc=True
+        ).execute()
+        
+        return jsonify({
+            "success": True,
+            "count": len(response.data),
+            "contacts": response.data
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+# ======================================
+# 💹 ENDPOINTS DE PYTH NETWORK - PRECIOS EN TIEMPO REAL
+# ======================================
+
+# Pyth Hermes API URL
+PYTH_HERMES_URL = "https://hermes.pyth.network"
+
+# Price Feed IDs más comunes (Pyth Network)
+PRICE_FEEDS = {
+    "eth": "0xff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace",  # ETH/USD
+    "btc": "0xe62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43",  # BTC/USD
+    "usdc": "0xeaa020c61cc479712813461ce153894a96a6c00b21ed0cfc2798d1f9a9e9c94a",  # USDC/USD
+    "usdt": "0x2b89b9dc8fdf9f34709a5b106b472f0f39bb6ca9ce04b0fd7f2e971688e2e53b",  # USDT/USD
+    "bnb": "0x2f95862b045670cd22bee3114c39763a4a08beeb663b145d283c31d7d1101c4f",   # BNB/USD
+    "sol": "0xef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d",   # SOL/USD
+    "matic": "0x5de33a9112c2b700b8d30b8a3402c103578ccfa2765696471cc672bd5cf6ac52", # MATIC/USD
+    "avax": "0x93da3352f9f1d105fdfe4971cfa80e9dd777bfc5d0f683ebb6e1294b92137bb7",  # AVAX/USD
+    "ada": "0x2a01deaec9e51a579277b34b122399984d0bbf57e2458a7e42fecd2829867a0d",   # ADA/USD
+    "doge": "0xdcef50dd0a4cd2dcc17e45df1676dcb336a11a61c69df7a0299b0150c672d25c",  # DOGE/USD
+}
+
+@app.route("/pyth/price/<symbol>", methods=["GET"])
+def get_pyth_price(symbol):
+    """Obtiene el precio en tiempo real de Pyth Network usando Hermes API."""
+    try:
+        symbol_lower = symbol.lower()
+        
+        # Verificar si el símbolo existe
+        if symbol_lower not in PRICE_FEEDS:
+            return jsonify({
+                "success": False,
+                "error": f"Symbol '{symbol}' not supported. Available: {', '.join(PRICE_FEEDS.keys())}"
+            }), 400
+        
+        price_feed_id = PRICE_FEEDS[symbol_lower]
+        
+        # Llamar a Hermes API
+        hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+        params = {"ids[]": price_feed_id}
+        
+        response = requests.get(hermes_url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        if not data.get("parsed"):
+            return jsonify({
+                "success": False,
+                "error": "No price data available"
+            }), 404
+        
+        # Parsear datos del precio
+        price_feed = data["parsed"][0]
+        price_data = price_feed["price"]
+        
+        # Calcular precio real
+        price_raw = int(price_data["price"])
+        expo = int(price_data["expo"])
+        price = price_raw * (10 ** expo)
+        
+        # Calcular confianza
+        conf_raw = int(price_data["conf"])
+        confidence = conf_raw * (10 ** expo)
+        
+        return jsonify({
+            "success": True,
+            "symbol": symbol.upper(),
+            "price": float(price),
+            "confidence": float(confidence),
+            "expo": expo,
+            "publish_time": price_data["publish_time"],
+            "price_feed_id": price_feed_id,
+            "message": f"Current {symbol.upper()} price: ${price:.2f} USD"
+        })
+        
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error fetching price from Hermes API: {str(e)}"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error processing price data: {str(e)}"
+        }), 500
+
+
+@app.route("/pyth/prices", methods=["GET"])
+def get_multiple_prices():
+    """Obtiene precios de múltiples criptomonedas usando Hermes API."""
+    try:
+        symbols = request.args.get("symbols", "eth,btc").split(",")
+        max_symbols = 10
+        
+        if len(symbols) > max_symbols:
+            return jsonify({
+                "success": False,
+                "error": f"Maximum {max_symbols} symbols allowed"
+            }), 400
+        
+        # Construir lista de IDs para Hermes
+        price_ids = []
+        symbol_map = {}
+        
+        for symbol in symbols:
+            symbol = symbol.strip().lower()
+            if symbol in PRICE_FEEDS:
+                price_ids.append(PRICE_FEEDS[symbol])
+                symbol_map[PRICE_FEEDS[symbol]] = symbol
+        
+        if not price_ids:
+            return jsonify({
+                "success": False,
+                "error": "No valid symbols provided"
+            }), 400
+        
+        # Llamar a Hermes API con múltiples IDs
+        hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+        params = [("ids[]", price_id) for price_id in price_ids]
+        
+        response = requests.get(hermes_url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        data = response.json()
+        
+        results = []
+        errors = []
+        
+        if data.get("parsed"):
+            for price_feed in data["parsed"]:
+                try:
+                    price_data = price_feed["price"]
+                    feed_id = price_feed["id"]
+                    
+                    # Calcular precio real
+                    price_raw = int(price_data["price"])
+                    expo = int(price_data["expo"])
+                    price = price_raw * (10 ** expo)
+                    
+                    symbol = symbol_map.get(feed_id, "UNKNOWN")
+                    
+                    results.append({
+                        "symbol": symbol.upper(),
+                        "price": float(price),
+                        "price_usd": f"${price:.2f}"
+                    })
+                except Exception as e:
+                    errors.append({
+                        "symbol": symbol_map.get(feed_id, "UNKNOWN").upper(),
+                        "error": str(e)
+                    })
+        
+        return jsonify({
+            "success": True,
+            "count": len(results),
+            "prices": results,
+            "errors": errors if errors else None
+        })
+        
+    except requests.exceptions.RequestException as e:
+        return jsonify({
+            "success": False,
+            "error": f"Error fetching prices from Hermes API: {str(e)}"
+        }), 500
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/pyth/chat", methods=["POST"])
+def pyth_chat_ai():
+    """Chat con IA para consultar precios usando Pyth Network (en inglés)."""
+    try:
+        data = request.get_json()
+        user_message = data.get("message", "")
+        
+        if not user_message:
+            return jsonify({
+                "success": False,
+                "error": "Message is required"
+            }), 400
+        
+        if not DEEPSEEK_API_KEY:
+            return jsonify({
+                "success": False,
+                "error": "AI API key not configured"
+            }), 500
+        
+        # Obtener precios actuales para contexto
+        available_symbols = list(PRICE_FEEDS.keys())
+        
+        # Prompt mejorado para la IA (en inglés con consejos de transferencia)
+        system_prompt = f"""You are an expert cryptocurrency advisor and price assistant. You help users get real-time cryptocurrency prices using Pyth Network and provide smart advice for making transfers and transactions.
+
+Available cryptocurrencies: {', '.join([s.upper() for s in available_symbols])}
+
+Your capabilities:
+1. Get real-time cryptocurrency prices
+2. Provide advice on the best time to transfer based on current prices
+3. Give recommendations on transaction strategies
+4. Help users understand market conditions
+5. Calculate portfolio value with multiple cryptocurrencies
+
+Response formats:
+
+**For price queries:**
+{{"action": "get_price", "symbol": "eth", "message": "Getting ETH price..."}}
+
+**For multiple prices:**
+{{"action": "get_multiple_prices", "symbols": ["eth", "btc"], "message": "Getting prices..."}}
+
+**For transfer advice:**
+{{"action": "transfer_advice", "symbol": "eth", "amount": 0.5, "message": "Analyzing transfer conditions..."}}
+
+**For portfolio calculation:**
+{{"action": "calculate_portfolio", "holdings": {{"eth": 2, "btc": 0.5, "sol": 10}}, "message": "Calculating your portfolio value..."}}
+
+**For general advice:**
+{{"action": "advice", "message": "Your personalized advice here..."}}
+
+Examples:
+- User: "What's the price of ETH?"
+  Response: {{"action": "get_price", "symbol": "eth", "message": "Fetching current ETH price..."}}
+
+- User: "Should I transfer 0.5 ETH now?"
+  Response: {{"action": "transfer_advice", "symbol": "eth", "amount": 0.5, "message": "Let me check the current ETH price to advise you..."}}
+
+- User: "Calculate my portfolio: 2 ETH, 0.5 BTC, 10 SOL"
+  Response: {{"action": "calculate_portfolio", "holdings": {{"eth": 2, "btc": 0.5, "sol": 10}}, "message": "Calculating your portfolio value..."}}
+
+- User: "How much is my crypto worth: 1.5 ETH and 100 USDC"
+  Response: {{"action": "calculate_portfolio", "holdings": {{"eth": 1.5, "usdc": 100}}, "message": "Getting current prices to calculate your portfolio..."}}
+
+- User: "Show me ETH and BTC prices for a transfer"
+  Response: {{"action": "get_multiple_prices", "symbols": ["eth", "btc"], "message": "Getting prices for your transfer decision..."}}
+
+Always respond in English and with valid JSON only."""
+
+        # Llamar a DeepSeek
+        headers = {
+            "Authorization": f"Bearer {DEEPSEEK_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_message}
+            ],
+            "temperature": 0.3,
+            "max_tokens": 500
+        }
+        
+        response = requests.post(DEEPSEEK_URL, headers=headers, json=payload, timeout=30)
+        response.raise_for_status()
+        
+        ai_response = response.json()
+        ai_message = ai_response["choices"][0]["message"]["content"].strip()
+        
+        # Parsear respuesta JSON de la IA
+        try:
+            ai_json = json.loads(ai_message)
+        except:
+            ai_json = {"action": "none", "message": ai_message}
+        
+        # Procesar acciones
+        action = ai_json.get("action", "none")
+        
+        if action == "get_price":
+            symbol = ai_json.get("symbol", "").lower()
+            if symbol in PRICE_FEEDS:
+                try:
+                    price_feed_id = PRICE_FEEDS[symbol]
+                    
+                    # Llamar a Hermes API
+                    hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+                    params = {"ids[]": price_feed_id}
+                    
+                    price_response = requests.get(hermes_url, params=params, timeout=10)
+                    price_response.raise_for_status()
+                    
+                    price_json = price_response.json()
+                    
+                    if price_json.get("parsed"):
+                        price_feed = price_json["parsed"][0]
+                        price_data = price_feed["price"]
+                        
+                        price_raw = int(price_data["price"])
+                        expo = int(price_data["expo"])
+                        price = price_raw * (10 ** expo)
+                        
+                        # Calcular confianza
+                        conf_raw = int(price_data["conf"])
+                        confidence = conf_raw * (10 ** expo)
+                        confidence_pct = (confidence / price * 100) if price > 0 else 0
+                        
+                        # Determinar volatilidad
+                        if confidence_pct < 0.1:
+                            volatility = "Very Low"
+                        elif confidence_pct < 0.5:
+                            volatility = "Low"
+                        elif confidence_pct < 1.0:
+                            volatility = "Moderate"
+                        elif confidence_pct < 2.0:
+                            volatility = "High"
+                        else:
+                            volatility = "Very High"
+                        
+                        # Timestamp legible
+                        from datetime import datetime
+                        publish_timestamp = datetime.fromtimestamp(price_data["publish_time"]).strftime("%Y-%m-%d %H:%M:%S UTC")
+                        
+                        ai_json["price_data"] = {
+                            "symbol": symbol.upper(),
+                            "price": float(price),
+                            "price_usd": f"${price:.2f}",
+                            "confidence": float(confidence),
+                            "confidence_usd": f"±${confidence:.4f}",
+                            "confidence_percentage": f"{confidence_pct:.3f}%",
+                            "volatility": volatility,
+                            "publish_time": price_data["publish_time"],
+                            "publish_timestamp": publish_timestamp,
+                            "expo": expo,
+                            "price_feed_id": price_feed["id"],
+                            "source": "Pyth Network (Hermes API)"
+                        }
+                        ai_json["message"] = f"The current price of {symbol.upper()} is ${price:.2f} USD (±${confidence:.4f}, {volatility} volatility)"
+                except Exception as e:
+                    ai_json["error"] = f"Error fetching price: {str(e)}"
+        
+        elif action == "get_multiple_prices":
+            symbols = ai_json.get("symbols", [])
+            prices_result = []
+            
+            # Construir lista de IDs
+            price_ids = [PRICE_FEEDS[s.lower()] for s in symbols if s.lower() in PRICE_FEEDS]
+            
+            if price_ids:
+                try:
+                    hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+                    params = [("ids[]", price_id) for price_id in price_ids]
+                    
+                    price_response = requests.get(hermes_url, params=params, timeout=10)
+                    price_response.raise_for_status()
+                    
+                    price_json = price_response.json()
+                    
+                    if price_json.get("parsed"):
+                        for price_feed in price_json["parsed"]:
+                            price_data = price_feed["price"]
+                            feed_id = price_feed["id"]
+                            
+                            price_raw = int(price_data["price"])
+                            expo = int(price_data["expo"])
+                            price = price_raw * (10 ** expo)
+                            
+                            # Calcular confianza
+                            conf_raw = int(price_data["conf"])
+                            confidence = conf_raw * (10 ** expo)
+                            confidence_pct = (confidence / price * 100) if price > 0 else 0
+                            
+                            # Volatilidad
+                            if confidence_pct < 0.5:
+                                volatility = "Low"
+                            elif confidence_pct < 1.0:
+                                volatility = "Moderate"
+                            else:
+                                volatility = "High"
+                            
+                            # Encontrar símbolo por feed_id
+                            symbol = next((k for k, v in PRICE_FEEDS.items() if v == feed_id), "UNKNOWN")
+                            
+                            prices_result.append({
+                                "symbol": symbol.upper(),
+                                "price": float(price),
+                                "price_usd": f"${price:.2f}",
+                                "confidence": float(confidence),
+                                "confidence_usd": f"±${confidence:.4f}",
+                                "volatility": volatility,
+                                "publish_time": price_data["publish_time"]
+                            })
+                except Exception as e:
+                    ai_json["error"] = f"Error fetching prices: {str(e)}"
+            
+            ai_json["prices"] = prices_result
+            if prices_result:
+                price_list = ", ".join([f"{p['symbol']}: {p['price_usd']}" for p in prices_result])
+                ai_json["message"] = f"Current prices - {price_list}"
+        
+        elif action == "transfer_advice":
+            symbol = ai_json.get("symbol", "").lower()
+            amount = ai_json.get("amount", 0)
+            
+            if symbol in PRICE_FEEDS:
+                try:
+                    price_feed_id = PRICE_FEEDS[symbol]
+                    
+                    # Obtener precio actual
+                    hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+                    params = {"ids[]": price_feed_id}
+                    
+                    price_response = requests.get(hermes_url, params=params, timeout=10)
+                    price_response.raise_for_status()
+                    
+                    price_json = price_response.json()
+                    
+                    if price_json.get("parsed"):
+                        price_feed = price_json["parsed"][0]
+                        price_data = price_feed["price"]
+                        
+                        price_raw = int(price_data["price"])
+                        expo = int(price_data["expo"])
+                        price = price_raw * (10 ** expo)
+                        conf_raw = int(price_data["conf"])
+                        confidence = conf_raw * (10 ** expo)
+                        
+                        # Calcular valor de la transferencia
+                        transfer_value_usd = price * amount if amount > 0 else 0
+                        
+                        # Generar consejo con IA
+                        advice_prompt = f"""Based on the current {symbol.upper()} price of ${price:.2f} USD with a confidence interval of ±${confidence:.2f}, provide brief advice (2-3 sentences) about:
+1. Whether it's a good time to transfer {amount if amount > 0 else 'some'} {symbol.upper()}
+2. Any considerations about transaction fees (gas fees on Scroll Sepolia are typically low, ~$0.01-0.10)
+3. Market volatility considerations
+
+Keep advice practical and concise."""
+
+                        advice_payload = {
+                            "model": "deepseek-chat",
+                            "messages": [
+                                {"role": "system", "content": "You are a cryptocurrency advisor. Provide brief, practical advice."},
+                                {"role": "user", "content": advice_prompt}
+                            ],
+                            "temperature": 0.7,
+                            "max_tokens": 200
+                        }
+                        
+                        advice_response = requests.post(DEEPSEEK_URL, headers=headers, json=advice_payload, timeout=30)
+                        advice_response.raise_for_status()
+                        advice_result = advice_response.json()
+                        advice_text = advice_result["choices"][0]["message"]["content"].strip()
+                        
+                        ai_json["price_data"] = {
+                            "symbol": symbol.upper(),
+                            "price": float(price),
+                            "price_usd": f"${price:.2f}",
+                            "confidence": float(confidence),
+                            "confidence_usd": f"±${confidence:.2f}",
+                            "source": "Pyth Network (Hermes API)"
+                        }
+                        
+                        ai_json["transfer_info"] = {
+                            "amount": amount,
+                            "estimated_value_usd": f"${transfer_value_usd:.2f}" if amount > 0 else "N/A",
+                            "estimated_gas_fee": "$0.01 - $0.10 (Scroll Sepolia)",
+                            "network": "Scroll Sepolia Testnet"
+                        }
+                        
+                        ai_json["advice"] = advice_text
+                        ai_json["message"] = f"Current {symbol.upper()} price: ${price:.2f} USD. Analysis complete."
+                        
+                except Exception as e:
+                    ai_json["error"] = f"Error generating transfer advice: {str(e)}"
+        
+        elif action == "calculate_portfolio":
+            holdings = ai_json.get("holdings", {})
+            
+            if not holdings:
+                ai_json["error"] = "No holdings provided for portfolio calculation"
+            else:
+                try:
+                    # Obtener símbolos válidos
+                    valid_holdings = {k.lower(): v for k, v in holdings.items() if k.lower() in PRICE_FEEDS}
+                    
+                    if not valid_holdings:
+                        ai_json["error"] = "No valid cryptocurrencies found in portfolio"
+                    else:
+                        # Construir lista de IDs para Hermes
+                        price_ids = [PRICE_FEEDS[symbol] for symbol in valid_holdings.keys()]
+                        
+                        # Obtener precios de todas las criptos del portfolio
+                        hermes_url = f"{PYTH_HERMES_URL}/v2/updates/price/latest"
+                        params = [("ids[]", price_id) for price_id in price_ids]
+                        
+                        price_response = requests.get(hermes_url, params=params, timeout=10)
+                        price_response.raise_for_status()
+                        
+                        price_json = price_response.json()
+                        
+                        if price_json.get("parsed") and len(price_json["parsed"]) > 0:
+                            portfolio_items = []
+                            total_value_usd = 0
+                            
+                            for price_feed in price_json["parsed"]:
+                                price_data = price_feed["price"]
+                                feed_id = price_feed["id"]
+                                
+                                # Calcular precio
+                                price_raw = int(price_data["price"])
+                                expo = int(price_data["expo"])
+                                price = price_raw * (10 ** expo)
+                                
+                                # Encontrar símbolo y cantidad
+                                symbol = next((k for k, v in PRICE_FEEDS.items() if v == feed_id), None)
+                                if symbol and symbol in valid_holdings:
+                                    amount = valid_holdings[symbol]
+                                    value_usd = price * amount
+                                    total_value_usd += value_usd
+                                    
+                                    portfolio_items.append({
+                                        "symbol": symbol.upper(),
+                                        "amount": amount,
+                                        "price": float(price),
+                                        "price_usd": f"${price:.2f}",
+                                        "value_usd": float(value_usd),
+                                        "value_formatted": f"${value_usd:,.2f}"
+                                    })
+                            
+                            if len(portfolio_items) == 0:
+                                ai_json["error"] = "No price data available for the cryptocurrencies in your portfolio"
+                            else:
+                                # Calcular porcentajes
+                                for item in portfolio_items:
+                                    item["percentage"] = (item["value_usd"] / total_value_usd * 100) if total_value_usd > 0 else 0
+                                    item["percentage_formatted"] = f"{item['percentage']:.2f}%"
+                                
+                                # Ordenar por valor descendente
+                                portfolio_items.sort(key=lambda x: x["value_usd"], reverse=True)
+                                
+                                # Generar resumen con IA solo si hay items
+                                summary_text = ""
+                                if len(portfolio_items) > 0:
+                                    try:
+                                        summary_prompt = f"""Based on this crypto portfolio analysis:
+- Total Value: ${total_value_usd:,.2f}
+- Holdings: {len(portfolio_items)} different cryptocurrencies
+- Top holding: {portfolio_items[0]['symbol']} ({portfolio_items[0]['percentage_formatted']})
+
+Provide a brief summary (2-3 sentences) about:
+1. Portfolio diversification quality
+2. Risk level based on distribution
+3. Any quick recommendation"""
+
+                                        summary_payload = {
+                                            "model": "deepseek-chat",
+                                            "messages": [
+                                                {"role": "system", "content": "You are a crypto portfolio advisor. Provide brief, actionable insights."},
+                                                {"role": "user", "content": summary_prompt}
+                                            ],
+                                            "temperature": 0.7,
+                                            "max_tokens": 150
+                                        }
+                                        
+                                        summary_response = requests.post(DEEPSEEK_URL, headers=headers, json=summary_payload, timeout=30)
+                                        summary_response.raise_for_status()
+                                        summary_result = summary_response.json()
+                                        summary_text = summary_result["choices"][0]["message"]["content"].strip()
+                                    except:
+                                        summary_text = "Portfolio calculated successfully. Review your holdings distribution above."
+                                
+                                ai_json["portfolio"] = {
+                                    "total_value_usd": float(total_value_usd),
+                                    "total_value_formatted": f"${total_value_usd:,.2f}",
+                                    "holdings_count": len(portfolio_items),
+                                    "items": portfolio_items
+                                }
+                                
+                                ai_json["summary"] = summary_text
+                                ai_json["message"] = f"Portfolio calculated: {len(portfolio_items)} assets worth ${total_value_usd:,.2f} USD"
+                        else:
+                            ai_json["error"] = "No price data received from Pyth Network"
+                            
+                except Exception as e:
+                    ai_json["error"] = f"Error calculating portfolio: {str(e)}"
+        
+        elif action == "advice":
+            # Consejo general sin precio específico
+            ai_json["message"] = ai_json.get("message", "Please specify which cryptocurrency you want advice about.")
+        
+        return jsonify(ai_json)
+        
+    except Exception as e:
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/pyth/supported", methods=["GET"])
+def get_supported_symbols():
+    """Obtiene la lista de criptomonedas soportadas."""
+    return jsonify({
+        "success": True,
+        "count": len(PRICE_FEEDS),
+        "symbols": list(PRICE_FEEDS.keys()),
+        "message": f"Supported cryptocurrencies: {', '.join([s.upper() for s in PRICE_FEEDS.keys()])}"
+    })
+
+
 # ==========================
 # 🚀 Ejecutar servidor Flask
 # ==========================
